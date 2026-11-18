@@ -99,9 +99,25 @@ enum HTTP {
             return data
         case 401:
             throw ProviderError.unauthorized
+        case 429:
+            throw ProviderError.rateLimited(retryAfter: retryAfter(http))
         default:
             throw ProviderError.http(http.statusCode, errorSnippet(data))
         }
+    }
+
+    /// Seconds to wait from a `Retry-After` header (delta-seconds or HTTP-date); nil when absent or invalid.
+    static func retryAfter(_ response: HTTPURLResponse, now: Date = Date()) -> TimeInterval? {
+        guard let raw = response.value(forHTTPHeaderField: "Retry-After")?.trimmingCharacters(in: .whitespaces),
+              !raw.isEmpty
+        else { return nil }
+        if let seconds = Double(raw), seconds.isFinite, seconds >= 0 { return seconds }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        if let date = formatter.date(from: raw) { return max(0, date.timeIntervalSince(now)) }
+        return nil
     }
 
     private static func applyDefaultHeaders(_ request: inout URLRequest, headers: [String: String]) {

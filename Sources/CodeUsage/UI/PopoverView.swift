@@ -124,7 +124,10 @@ private struct ProviderSectionView: View {
                 .padding(.bottom, 12)
 
             if let error {
-                ErrorNotice(error: error, lastSuccess: isNotLoggedIn(error) ? nil : snapshot?.fetchedAt, now: now)
+                ErrorNotice(error: error,
+                            lastSuccess: isNotLoggedIn(error) ? nil : snapshot?.fetchedAt,
+                            retryAt: store.nextRetry(for: provider, now: now),
+                            now: now)
                     .padding(.bottom, snapshot == nil || isNotLoggedIn(error) ? 0 : 12)
             }
 
@@ -258,7 +261,20 @@ private struct PlaceholderRow: View {
 private struct ErrorNotice: View {
     let error: ProviderError
     let lastSuccess: Date?
+    /// When the app will ask a rate-limited provider again, if it is held back.
+    var retryAt: Date?
     let now: Date
+
+    /// "마지막 성공: 14분 전 · 7분 후 다시 시도"
+    private var detailText: String? {
+        var parts: [String] = []
+        if let lastSuccess { parts.append("마지막 성공: \(Fmt.relative(lastSuccess, now: now))") }
+        if let retryAt, retryAt > now {
+            let minutes = Int((retryAt.timeIntervalSince(now) / 60).rounded(.up))
+            parts.append(minutes <= 1 ? "1분 안에 다시 시도" : "\(minutes)분 후 다시 시도")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 
     private var isLogin: Bool {
         switch error {
@@ -278,8 +294,8 @@ private struct ErrorNotice: View {
                     .font(.system(size: 12, weight: .medium))
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                if let lastSuccess {
-                    Text("마지막 성공: \(Fmt.relative(lastSuccess, now: now))")
+                if let detailText {
+                    Text(detailText)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }

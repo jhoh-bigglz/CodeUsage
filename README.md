@@ -42,6 +42,9 @@
 
 Tokens are never logged, displayed or written anywhere except back to the CLI's own store (see below).
 Usage refreshes every 2 minutes by default (configurable, minimum 30 s) and right after the Mac wakes.
+Each provider is scheduled on its own. If an endpoint answers **HTTP 429**, that provider is left alone for
+the server's `Retry-After` (or 5 → 10 → 20 → 30 min without one, never sooner than the refresh interval) —
+including when you open the popover or press refresh — while the other provider keeps its normal schedule.
 
 ## Requirements
 

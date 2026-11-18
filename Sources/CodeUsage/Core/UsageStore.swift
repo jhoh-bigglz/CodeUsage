@@ -22,8 +22,24 @@ final class UsageStore: ObservableObject {
     private var isRefreshing = false
     /// A wake-triggered refresh arrived while another was running; run once more when it finishes.
     private var refreshAfterCurrent = false
-    /// Consecutive refresh cycles that ended with a network error; drives a short retry backoff.
-    private var networkFailureStreak = 0
+    /// Consecutive HTTP 429 responses per provider; drives the rate-limit backoff.
+    private var rateLimitStreak: [ProviderID: Int] = [:]
+    /// Consecutive network errors per provider; drives a short retry backoff.
+    private var networkStreak: [ProviderID: Int] = [:]
+    /// When each provider's last fetch finished and how it ended; each provider is scheduled on its own from this.
+    private var lastFetch: [ProviderID: FetchRecord] = [:]
+
+    private struct FetchRecord {
+        var finishedAt: Date
+        var outcome: Outcome
+    }
+
+    private enum Outcome {
+        case answered
+        case networkError(streak: Int)
+        /// HTTP 429; `pause` = how long the server asked us to stay away.
+        case rateLimited(pause: TimeInterval)
+    }
     private var started = false
     private var pollTask: Task<Void, Never>?
     private var wakeObserver: NSObjectProtocol?
@@ -65,13 +81,14 @@ final class UsageStore: ObservableObject {
 
         pollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                guard let wait = self?.secondsUntilNextPoll() else { return }
-                if wait > 0 {
+                guard let step = self?.nextPollStep() else { return }
+                switch step {
+                case .wait(let seconds):
                     // Sleep in short chunks so a changed interval takes effect quickly.
-                    try? await Task.sleep(nanoseconds: UInt64(min(wait, 30) * 1_000_000_000))
-                    continue
+                    try? await Task.sleep(nanoseconds: UInt64(min(max(seconds, 0.5), 30) * 1_000_000_000))
+                case .fetch(let ids):
+                    await self?.refresh(only: ids)
                 }
-                await self?.refresh()
             }
         }
 
@@ -91,20 +108,73 @@ final class UsageStore: ObservableObject {
         }
     }
 
-    /// Seconds until the next scheduled poll; 0 when a poll is due now.
-    /// After network errors, retries sooner (15 s, 30 s, 60 s, … capped at the interval).
-    private func secondsUntilNextPoll(now: Date = Date()) -> TimeInterval {
-        if isRefreshing { return 2 }
-        guard let lastRefresh else { return 0 }
-        // The wall clock went backwards (manual change, NTP correction): treat the poll as due.
-        if lastRefresh > now { return 0 }
-        var interval = Self.pollInterval()
-        if networkFailureStreak > 0 {
-            let backoff = 15 * pow(2, Double(min(networkFailureStreak - 1, 10)))
-            interval = min(interval, backoff)
+    private enum PollStep {
+        case wait(TimeInterval)
+        /// Fetch these providers: they are due on their own schedule.
+        case fetch(Set<ProviderID>)
+    }
+
+    /// What the poll loop does next. Each provider runs on its own schedule (see `nextDue`),
+    /// so a rate-limited or failing provider never changes how often the other one is fetched.
+    private func nextPollStep(now: Date = Date()) -> PollStep {
+        if isRefreshing { return .wait(2) }
+        let interval = Self.pollInterval()
+        var due = Set<ProviderID>()
+        var next = Date.distantFuture
+        for provider in providers {
+            let date = nextDue(provider.id, interval: interval, now: now)
+            if date <= now { due.insert(provider.id) } else { next = min(next, date) }
         }
-        let due = lastRefresh.addingTimeInterval(interval)
-        return max(0, due.timeIntervalSince(now))
+        if !due.isEmpty { return .fetch(due) }
+        return .wait(next.timeIntervalSince(now))
+    }
+
+    /// When a provider should be fetched next, measured from the end of its last fetch:
+    /// - normal: after the polling interval;
+    /// - network error: sooner (15 s, 30 s, 60 s, … capped at the interval);
+    /// - HTTP 429: after the longer of the interval and the server-requested pause.
+    /// Never fetched, or the wall clock moved backwards past the last fetch: due now.
+    private func nextDue(_ id: ProviderID, interval: TimeInterval, now: Date) -> Date {
+        guard let record = lastFetch[id], record.finishedAt <= now else { return now }
+        let delay: TimeInterval
+        switch record.outcome {
+        case .answered:
+            delay = interval
+        case .networkError(let streak):
+            delay = min(interval, 15 * pow(2, Double(min(max(streak, 1) - 1, 10))))
+        case .rateLimited(let pause):
+            delay = max(interval, pause)
+        }
+        return record.finishedAt.addingTimeInterval(delay)
+    }
+
+    /// When the app will ask a rate-limited provider again; nil when it is not held back.
+    func nextRetry(for provider: ProviderID, now: Date = Date()) -> Date? {
+        guard isRateLimited(provider, now: now) else { return nil }
+        return nextDue(provider, interval: Self.pollInterval(), now: now)
+    }
+
+    private static let maximumRateLimitDelay: TimeInterval = 3_600
+
+    /// How long to pause a provider after HTTP 429: the server's Retry-After (30 s…1 h),
+    /// otherwise 5 min, 10 min, 20 min, then 30 min for each consecutive 429.
+    static func rateLimitDelay(retryAfter: TimeInterval?, streak: Int) -> TimeInterval {
+        if let retryAfter, retryAfter.isFinite {
+            return min(max(retryAfter, 30), maximumRateLimitDelay)
+        }
+        let step = max(streak, 1) - 1
+        return min(300 * pow(2, Double(min(step, 10))), 1_800)
+    }
+
+    /// True while a provider whose last answer was HTTP 429 is held back until its next scheduled fetch
+    /// (the longer of the polling interval and the server-requested pause). Every refresh path — the poll loop,
+    /// the refresh button, opening the popover, waking — skips it until then.
+    /// Measured from the end of the 429 fetch, so a wall clock moved backwards ends the hold instead of stretching it.
+    func isRateLimited(_ provider: ProviderID, now: Date = Date()) -> Bool {
+        guard let record = lastFetch[provider], case .rateLimited = record.outcome, record.finishedAt <= now else {
+            return false
+        }
+        return now < nextDue(provider, interval: Self.pollInterval(), now: now)
     }
 
     static func pollInterval() -> TimeInterval {
@@ -115,13 +185,19 @@ final class UsageStore: ObservableObject {
 
     // MARK: - Refresh
 
-    /// Fetches both providers concurrently. Ignored while a refresh is already running.
-    func refresh() async {
+    /// Fetches the providers concurrently, skipping providers paused after HTTP 429.
+    /// `only` limits the fetch to those providers (the poll loop passes the ones that are due).
+    /// Ignored while a refresh is already running.
+    func refresh(only: Set<ProviderID>? = nil) async {
         guard !isRefreshing, !isPreview, !providers.isEmpty else { return }
+        let start = Date()
+        let providers = self.providers.filter { provider in
+            (only?.contains(provider.id) ?? true) && !isRateLimited(provider.id, now: start)
+        }
+        guard !providers.isEmpty else { return }
         isRefreshing = true
         loading = Set(providers.map(\.id))
 
-        let providers = self.providers
         await withTaskGroup(of: (ProviderID, Result<ProviderSnapshot, ProviderError>).self) { group in
             for provider in providers {
                 group.addTask {
@@ -139,8 +215,6 @@ final class UsageStore: ObservableObject {
 
         loading = []
         lastRefresh = Date()
-        let hadNetworkError = errors.values.contains { if case .network = $0 { return true } else { return false } }
-        networkFailureStreak = hadNetworkError ? networkFailureStreak + 1 : 0
         isRefreshing = false
 
         if refreshAfterCurrent {
@@ -161,13 +235,35 @@ final class UsageStore: ObservableObject {
     }
 
     private func apply(_ result: Result<ProviderSnapshot, ProviderError>, for id: ProviderID) {
+        let finished = Date()
         switch result {
         case .success(let snapshot):
             snapshots[id] = snapshot
             errors[id] = nil
+            rateLimitStreak[id] = nil
+            networkStreak[id] = nil
+            lastFetch[id] = FetchRecord(finishedAt: finished, outcome: .answered)
             historyStore.record(snapshot)
         case .failure(let error):
             errors[id] = error
+            switch error {
+            case .rateLimited(let retryAfter):
+                let streak = (rateLimitStreak[id] ?? 0) + 1
+                rateLimitStreak[id] = streak
+                networkStreak[id] = nil
+                let pause = Self.rateLimitDelay(retryAfter: retryAfter, streak: streak)
+                lastFetch[id] = FetchRecord(finishedAt: finished, outcome: .rateLimited(pause: pause))
+            case .network:
+                // A timeout says nothing about the rate limit: keep the 429 streak so its backoff keeps growing.
+                let streak = (networkStreak[id] ?? 0) + 1
+                networkStreak[id] = streak
+                lastFetch[id] = FetchRecord(finishedAt: finished, outcome: .networkError(streak: streak))
+            default:
+                // The server answered with something other than 429: the pause is over.
+                rateLimitStreak[id] = nil
+                networkStreak[id] = nil
+                lastFetch[id] = FetchRecord(finishedAt: finished, outcome: .answered)
+            }
             // Logged out: the old numbers belong to a login that no longer exists.
             if case .notLoggedIn = error { snapshots[id] = nil }
         }
@@ -198,11 +294,13 @@ final class UsageStore: ObservableObject {
     /// only after a while, so a brief outage does not flicker the label.
     func isStale(_ provider: ProviderID, now: Date = Date()) -> Bool {
         guard let error = errors[provider], let snapshot = snapshots[provider] else { return false }
-        if case .network = error {
+        switch error {
+        case .network, .rateLimited:
             let threshold = max(3 * Self.pollInterval(), 600)
             return now.timeIntervalSince(snapshot.fetchedAt) > threshold
+        default:
+            return true
         }
-        return true
     }
 
     /// Usage growth in %/hour for the session (or weekly) window; nil when unknown.

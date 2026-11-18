@@ -96,6 +96,8 @@ enum ProviderError: Error, Equatable, LocalizedError, Sendable {
     case tokenExpired(String)
     case unauthorized
     case http(Int, String?)
+    /// HTTP 429. `retryAfter` = seconds from the server's Retry-After header, when present.
+    case rateLimited(retryAfter: TimeInterval?)
     case network(String)
     case decoding(String)
 
@@ -105,6 +107,7 @@ enum ProviderError: Error, Equatable, LocalizedError, Sendable {
         case .tokenExpired(let hint): return hint
         case .unauthorized: return "인증이 거부되었습니다. 다시 로그인하세요."
         case .http(let code, let msg): return "HTTP \(code)" + (msg.map { ": \($0)" } ?? "")
+        case .rateLimited: return "요청이 너무 많아 서버가 잠시 제한했습니다 (HTTP 429)"
         case .network(let msg): return "네트워크 오류: \(msg)"
         case .decoding(let msg): return "응답 해석 실패: \(msg)"
         }

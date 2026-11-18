@@ -264,6 +264,8 @@ actor CodexAuthStore {
         case 400, 401, 403:
             // invalid_grant / refresh_token_expired / refresh_token_reused: only a new login helps.
             throw ProviderError.tokenExpired(CodexCredentials.refreshRejectedHint)
+        case 429:
+            throw ProviderError.rateLimited(retryAfter: HTTP.retryAfter(response))
         default:
             throw ProviderError.http(response.statusCode, CodexSupport.oauthErrorCode(from: data))
         }

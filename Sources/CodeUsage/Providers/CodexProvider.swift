@@ -74,6 +74,8 @@ struct CodexProvider: UsageProvider {
             return data
         case 401:
             return nil
+        case 429:
+            throw ProviderError.rateLimited(retryAfter: HTTP.retryAfter(response))
         default:
             throw ProviderError.http(response.statusCode, CodexSupport.apiErrorMessage(from: data))
         }
