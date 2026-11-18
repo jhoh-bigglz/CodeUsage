@@ -49,3 +49,7 @@ $B --render-preview /tmp/cu      # 내장 샘플 데이터로 팝오버/메뉴 �
 - 메뉴 막대: Claude·Codex 두 값을 위아래 두 줄로 표시합니다. 현재 세션이 진행 중이면 세션 값, 아니면 주간 한도 값이고, 주간 한도 값 옆에는 작은 `w`가 붙습니다.
 - 퍼센트 표시는 공급자별로 설정 › 퍼센트 표시에서 "사용량" 또는 "남은 양"으로 고를 수 있습니다. 기본값은 Claude 사용량, Codex 남은 양입니다(각 서비스 자체 화면과 같은 방식).
 - 앱 아이콘(`</*>`)은 `swift scripts/make-icon.swift`로 `Resources/AppIcon.icns`에 다시 생성합니다. 파일이 없으면 `build.sh`가 자동으로 생성합니다.
+
+## 라이선스
+
+MIT — [LICENSE](LICENSE) 참고.
