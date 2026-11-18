@@ -1,55 +1,97 @@
-# Code Usage
+<p align="center">
+  <img src="docs/images/icon.png" width="128" alt="Code Usage app icon">
+</p>
 
-Claude Code와 Codex의 플랜 사용량을 한 번에 보여 주는 개인용 macOS 메뉴 막대 앱입니다 (macOS 14+, AppKit + SwiftUI, 외부 의존성 없음).
+<h1 align="center">Code Usage</h1>
 
-- **메뉴 막대 아이콘**: Claude, Codex 각각 하나의 값을 보여 줍니다. 현재 세션(5시간 창)이 진행 중이면 세션 사용률을, 없으면 주간 한도 사용률을 표시합니다.
-- **팝오버**: 공급자별 현재 세션 / 주간 한도 / 모델별 주간 한도, 리셋까지 남은 시간, 소모 속도(%/hr), 현재 속도면 한도에 도달하는 시각.
-- **기록**: 최근 8일 사용량을 `~/Library/Application Support/CodeUsage/history.json`에 저장하고 차트로 보여 줍니다.
+<p align="center">
+  A tiny macOS menu bar app that shows your <b>Claude</b> and <b>Codex</b> plan usage side by side.
+</p>
 
-## 데이터를 가져오는 방법
+<p align="center">
+  <b>English</b> · <a href="README.ko.md">한국어</a>
+</p>
 
-별도 로그인 없이, 이 Mac의 CLI가 이미 가진 로그인 정보를 재사용합니다.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
+    <img src="docs/images/hero-light.png" width="440" alt="Code Usage menu bar item and popover">
+  </picture>
+</p>
 
-| 공급자 | 자격 증명 | 사용량 API |
+> Screenshots use built-in sample data. The app's UI is in Korean.
+
+## Features
+
+- **Compact menu bar item** — two stacked rows, one for Claude and one for Codex, about 40 pt wide.
+  Each row shows the current session while one is running, otherwise the weekly limit (marked with a small `w`).
+- **Popover** — per provider: current session, weekly limit and per-model weekly limits, time until reset,
+  burn rate (%/hr), and a warning when the current pace would hit the limit before the reset.
+- **Used or remaining** — choose per provider whether percentages show usage or what is left.
+  Defaults match each service's own UI: Claude shows used, Codex shows remaining.
+- **History** — the last 8 days are kept in `~/Library/Application Support/CodeUsage/history.json` and shown as charts.
+- **No extra login** — reuses the logins the Claude Code and Codex CLIs already have on your Mac.
+- Native AppKit + SwiftUI, no third-party dependencies, macOS 14+.
+
+## How it works
+
+| Provider | Credentials | Usage endpoint |
 |---|---|---|
-| Claude | 키체인 항목 `Claude Code-credentials` (`/usr/bin/security`로 읽음), 없으면 `~/.claude/.credentials.json` | `GET https://api.anthropic.com/api/oauth/usage` |
-| Codex | `$CODEX_HOME/auth.json` (기본 `~/.codex/auth.json`, ChatGPT 로그인) | `GET https://chatgpt.com/backend-api/wham/usage` |
+| Claude | Keychain item `Claude Code-credentials` (read via `/usr/bin/security`), falling back to `~/.claude/.credentials.json` | `GET https://api.anthropic.com/api/oauth/usage` |
+| Codex | `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`, ChatGPT login) | `GET https://chatgpt.com/backend-api/wham/usage` |
 
-토큰은 로그·화면·파일 어디에도 출력하지 않습니다. 기본 새로고침 주기는 2분이며 설정에서 바꿀 수 있습니다 (최소 30초). 잠자기에서 깨어나면 바로 새로고침합니다.
+Tokens are never logged, displayed or written anywhere except back to the CLI's own store (see below).
+Usage refreshes every 2 minutes by default (configurable, minimum 30 s) and right after the Mac wakes.
 
-## 빌드 · 설치 · 실행
+## Requirements
+
+- macOS 14 or later, Xcode command line tools (Swift 6 toolchain)
+- Signed in to [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Codex](https://github.com/openai/codex) (ChatGPT login)
+
+## Build and install
 
 ```sh
-scripts/build.sh                 # build/CodeUsage.app 생성 (release, ad-hoc 서명)
-scripts/build.sh --install       # ~/Applications/CodeUsage.app 에 설치 (실행 중이면 종료 후 교체)
-scripts/build.sh --install --run # 설치 후 실행
-scripts/build.sh --run           # 설치 없이 build/CodeUsage.app 실행
+scripts/build.sh                 # build build/CodeUsage.app (release, ad-hoc signed)
+scripts/build.sh --install       # install to ~/Applications/CodeUsage.app (quits a running copy first)
+scripts/build.sh --install --run # install and launch
+scripts/build.sh --run           # launch build/CodeUsage.app without installing
 ```
 
-로그인 시 자동 실행은 설정 창의 "로그인 시 실행"에서 켭니다 (`~/Applications`에 설치한 앱에서 사용하세요).
+Turn on **Launch at login** in Settings (use the copy installed in `~/Applications`).
 
-## 토큰 자동 갱신 주의
+## Token auto-refresh
 
-설정의 **토큰 자동 갱신**(기본 켜짐)은 액세스 토큰이 만료됐을 때 리프레시 토큰으로 새 토큰을 받아 **CLI의 저장소에 다시 기록**합니다 (Claude Code 키체인 항목 / `~/.codex/auth.json`). 리프레시 토큰은 회전될 수 있으므로, CLI가 같은 시점에 직접 갱신하면 어느 한쪽이 무효가 된 토큰을 가질 수 있습니다. 이 경우 터미널에서 `claude` 또는 `codex`를 한 번 실행하면 복구됩니다. CLI 저장소를 건드리고 싶지 않다면 이 옵션을 끄세요. 끄면 토큰이 만료됐을 때 CLI를 한 번 실행하라는 안내만 표시합니다.
+**Auto-refresh tokens** (on by default) renews an expired access token with the refresh token and
+**writes the new tokens back to the CLI's store** (the Claude Code keychain item / `~/.codex/auth.json`),
+so the CLI keeps working. Refresh tokens can rotate, so if the CLI refreshes at the same moment one side may
+end up with an invalidated token; running `claude` or `codex` once fixes it. Turn the option off if you do not
+want the app to touch the CLI stores — it will then only ask you to run the CLI when a token expires.
 
-## 디버그 플래그
+## Debug flags
 
 ```sh
 B=build/CodeUsage.app/Contents/MacOS/CodeUsage
 
-$B --dump                        # 두 공급자를 한 번씩 조회해 스냅샷을 JSON으로 출력 (오류는 텍스트), 종료 코드 0
-CODEUSAGE_DEBUG=1 $B --dump      # 원본 사용량 응답 JSON도 stderr로 출력 (헤더·토큰은 출력하지 않음)
-$B --render-preview /tmp/cu      # 내장 샘플 데이터로 팝오버/메뉴 막대를 2x PNG로 렌더링 (네트워크 없음)
+$B --dump                        # fetch both providers once and print the snapshots as JSON
+CODEUSAGE_DEBUG=1 $B --dump      # also print the raw usage responses to stderr (never headers or tokens)
+$B --render-preview /tmp/cu      # render the popover and menu bar item to 2x PNGs from sample data (no network)
 ```
 
-`--render-preview`는 `popover-light.png`, `popover-dark.png`, `menubar-light.png`, `menubar-dark.png`를 만듭니다.
+## Regenerating assets
 
-## 표시 방식 / 아이콘
+```sh
+swift scripts/make-icon.swift    # app icon → Resources/AppIcon.icns (build.sh runs it if missing)
 
-- 메뉴 막대: Claude·Codex 두 값을 위아래 두 줄로 표시합니다. 현재 세션이 진행 중이면 세션 값, 아니면 주간 한도 값이고, 주간 한도 값 옆에는 작은 `w`가 붙습니다.
-- 퍼센트 표시는 공급자별로 설정 › 퍼센트 표시에서 "사용량" 또는 "남은 양"으로 고를 수 있습니다. 기본값은 Claude 사용량, Codex 남은 양입니다(각 서비스 자체 화면과 같은 방식).
-- 앱 아이콘(`</*>`)은 `swift scripts/make-icon.swift`로 `Resources/AppIcon.icns`에 다시 생성합니다. 파일이 없으면 `build.sh`가 자동으로 생성합니다.
+build/CodeUsage.app/Contents/MacOS/CodeUsage --render-preview /tmp/cu-shots \
+    -claudeShowsRemaining NO -codexShowsRemaining YES
+swift scripts/make-readme-shots.swift /tmp/cu-shots docs/images   # README screenshots
+```
 
-## 라이선스
+## Disclaimer
 
-MIT — [LICENSE](LICENSE) 참고.
+This is an unofficial personal project, not affiliated with Anthropic or OpenAI. It relies on undocumented
+endpoints that may change or stop working at any time.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
